@@ -634,6 +634,16 @@ async def delete_article(
 
     title = article.title or "Untitled"
 
+    # Delete file from storage if exists
+    if article.file_path:
+        from app.storage import StorageError, get_storage
+
+        try:
+            storage = get_storage()
+            await storage.delete(article.file_path)
+        except StorageError as e:
+            logger.warning(f"Failed to delete file from storage: {e}")
+
     # Delete the article (cascade handles notes, tags, categories)
     await db.delete(article)
     await db.commit()
@@ -1735,6 +1745,22 @@ async def upload_article_pdf(
         # Extract content from PDF
         extracted = await extract_content(file_path=temp_path)
 
+        # Upload to storage backend
+        from uuid import uuid4
+
+        from app.storage import StorageError, get_storage
+
+        storage = get_storage()
+        # Generate unique filename to avoid collisions
+        safe_filename = file.filename.replace("/", "_").replace("\\", "_")
+        storage_key = f"uploads/{current_user.id}/{uuid4()}_{safe_filename}"
+        try:
+            await storage.upload(storage_key, content, "application/pdf")
+            file_path = storage_key
+        except StorageError as e:
+            logger.warning(f"Failed to upload PDF to storage: {e}. Using placeholder path.")
+            file_path = storage_key  # Store the key anyway for future retry
+
         # Create article
         article = Article(
             user_id=current_user.id,
@@ -1743,7 +1769,7 @@ async def upload_article_pdf(
             authors=extracted.authors,
             extracted_text=extracted.text,
             word_count=len(extracted.text.split()) if extracted.text else None,
-            file_path=f"uploads/{current_user.id}/{file.filename}",
+            file_path=file_path,
             article_metadata=extracted.metadata,
             processing_status=ProcessingStatus.PENDING,
         )
@@ -1979,6 +2005,9 @@ async def bulk_delete(
         )
 
     # Delete articles
+    from app.storage import StorageError, get_storage
+
+    storage = get_storage()
     count = 0
     for article_id in article_ids:
         try:
@@ -1990,6 +2019,12 @@ async def bulk_delete(
             )
             article = result.scalar_one_or_none()
             if article:
+                # Delete file from storage if exists
+                if article.file_path:
+                    try:
+                        await storage.delete(article.file_path)
+                    except StorageError as e:
+                        logger.warning(f"Failed to delete file {article.file_path}: {e}")
                 await db.delete(article)
                 count += 1
         except Exception as e:

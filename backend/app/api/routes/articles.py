@@ -214,9 +214,21 @@ async def create_article_from_upload(
         # Extract content from PDF
         extracted = await extract_content(file_path=temp_path)
 
-        # TODO: Upload to R2 storage and get permanent path
-        # For now, we'll store the file path as a placeholder
-        file_path = f"uploads/{current_user.id}/{file.filename}"
+        # Upload to storage backend
+        from uuid import uuid4
+
+        from app.storage import StorageError, get_storage
+
+        storage = get_storage()
+        # Generate unique filename to avoid collisions
+        safe_filename = file.filename.replace("/", "_").replace("\\", "_")
+        storage_key = f"uploads/{current_user.id}/{uuid4()}_{safe_filename}"
+        try:
+            await storage.upload(storage_key, content, "application/pdf")
+            file_path = storage_key
+        except StorageError as e:
+            logger.warning(f"Failed to upload PDF to storage: {e}. Using placeholder path.")
+            file_path = storage_key  # Store the key anyway for future retry
 
         # Create article
         article = Article(
@@ -568,7 +580,15 @@ async def delete_article(
             detail="Article not found",
         )
 
-    # TODO: Delete file from R2 storage if exists
+    # Delete file from storage if exists
+    if article.file_path:
+        from app.storage import StorageError, get_storage
+
+        try:
+            storage = get_storage()
+            await storage.delete(article.file_path)
+        except StorageError as e:
+            logger.warning(f"Failed to delete file from storage: {e}")
 
     await db.delete(article)
     await db.commit()
@@ -730,6 +750,9 @@ async def bulk_delete_articles(
     current_user: User = Depends(get_current_user),
 ):
     """Delete multiple articles at once"""
+    from app.storage import StorageError, get_storage
+
+    storage = get_storage()
     deleted = 0
     failed = []
 
@@ -743,6 +766,13 @@ async def bulk_delete_articles(
             if not article:
                 failed.append(f"{article_id}: Not found")
                 continue
+
+            # Delete file from storage if exists
+            if article.file_path:
+                try:
+                    await storage.delete(article.file_path)
+                except StorageError as e:
+                    logger.warning(f"Failed to delete file {article.file_path}: {e}")
 
             await db.delete(article)
             deleted += 1

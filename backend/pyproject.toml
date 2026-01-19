@@ -38,6 +38,8 @@ dependencies = [
 
     # Storage (S3-compatible)
     "boto3>=1.34.0",
+    "aioboto3>=12.0.0",  # Async S3 client
+    "aiofiles>=23.0.0",  # Async file I/O for local storage
 
     # Encryption
     "cryptography>=42.0.0",
